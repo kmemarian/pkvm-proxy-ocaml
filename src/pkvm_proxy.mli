@@ -23,22 +23,46 @@ type _ host_smccc_func =
   | Kvm_flush_cpu_context
   | Pkvm_prot_finalize
 
-(* Hypercalls available after pKVM finalisation *)
+  (* Hypercalls available after pKVM finalisation *)
   | Pkvm_host_share_hyp    : int64 -> unit host_smccc_func (* highly unsafe *)
   | Pkvm_host_unshare_hyp  : int64 -> unit host_smccc_func
-  | Pkvm_host_reclaim_page : int64 -> unit host_smccc_func
-  | Pkvm_host_map_guest    : int64 * int64 -> unit host_smccc_func
+  (* | Pkvm_host_reclaim_page : int64 -> unit host_smccc_func *)
+  | Pkvm_host_map_guest    : int64 * int64 * int64 * int64(*TODO: this is enum__kvm_pgtable_prot it is dodgy to hardcode the size here*) -> unit host_smccc_func
+  | Pkvm_host_unmap_guest  : int * int64 * int64 * int64(* TODO: or really int8 ?*) -> unit(*TODO: check*) host_smccc_func
+  | Pkvm_relax_perms (* TODO: u64 * u64 * u64(or really int8) * enum__kvm_pgtable_prot *)
+  | Pkvm_wrprotect         : int * int64 * int64 * int64(* TODO: or really int8 ?*) -> unit(*TODO: check*) host_smccc_func
+  | Pkvm_dirty_log         : int64 * int64 -> unit(*TODO: check*) host_smccc_func
+  | Pkvm_tlb_flush_vmid    : int -> unit host_smccc_func
   | Kvm_adjust_pc          : int64 -> unit host_smccc_func
   | Kvm_vcpu_run           : int64 -> int host_smccc_func
   | Kvm_timer_set_cntvoff  : int64 -> unit host_smccc_func
   | Vgic_v3_save_vmcr_aprs
   | Vgic_v3_restore_vmcr_aprs
-  | Pkvm_init_vm           : int64 * int64 * int64 * int64 -> int host_smccc_func
-  | Pkvm_init_vcpu         : int * int64 * int64 -> unit host_smccc_func
-  | Pkvm_teardown_vm       : int -> unit host_smccc_func
-  | Pkvm_vcpu_load         : int * int * int64 -> int host_smccc_func
-  | Pkvm_vcpu_put          : unit host_smccc_func
-  | Pkvm_vcpu_sync_state   : unit host_smccc_func
+  | Pkvm_init_vm                  : int64 * int64 -> int host_smccc_func
+  | Pkvm_init_vcpu                : int * int64 -> unit host_smccc_func
+  | Pkvm_start_teardown_vm        : int -> int host_smccc_func
+  | Pkvm_finalize_teardown_vm     : int -> unit(*TODO: check*) host_smccc_func
+  | Pkvm_reclaim_dying_guest_page : int * int64 * int64 * int64(* TODO: or really int8 ?*) -> int host_smccc_func
+  | Pkvm_vcpu_load                : int * int * int64 -> int host_smccc_func
+  | Pkvm_vcpu_put                 : unit host_smccc_func
+  | Pkvm_vcpu_sync_state          : unit host_smccc_func
+  | Pkvm_load_tracing
+  | Pkvm_teardown_tracing
+  | Pkvm_enable_tracing
+  | Pkvm_swap_reader_tracing
+  | Pkvm_enable_event
+  | Pkvm_hyp_alloc_mgt_refill      : int64 * int64 * int64 -> int host_smccc_func
+  | Pkvm_hyp_alloc_mgt_reclaimable
+  | Pkvm_hyp_alloc_mgt_reclaim
+  | Pkvm_host_iommu_alloc_domain
+  | Pkvm_host_iommu_free_domain
+  | Pkvm_host_iommu_attach_dev
+  | Pkvm_host_iommu_detach_dev
+  | Pkvm_host_iommu_map_pages
+  | Pkvm_host_iommu_unmap_pages
+  | Pkvm_host_iommu_iova_to_phys
+  | Pkvm_host_hvc_pd
+  | Pkvm_stage2_snapshot
 
 val pp_host_smccc_func : 'a host_smccc_func Fmt.t
 
@@ -194,10 +218,11 @@ val host_map_guest : ?topup_memcache:bool -> vcpu -> 'a region -> int64 -> unit
 
     {b Warning} Must be invoked in a [vcpu-load]...[vcpu-put] block. *)
 
-val host_reclaim_region : 'a region -> unit
+(* val host_reclaim_region : 'a region -> unit *)
+val reclaim_dying_guest_page : int -> 'a region -> int64 -> unit
 
 val init_vm : ?vcpus:int -> ?protected:bool -> unit -> vm
-val teardown_vm : ?free_memcache:bool -> vm -> unit
+val teardown_vm : ?free_memcache:bool -> ?cleanup:(unit -> unit) -> vm -> unit
 
 val init_vcpu : vm -> int ->  vcpu
 val free_vcpu : ?free_memcache:bool -> vcpu -> unit

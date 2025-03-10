@@ -64,11 +64,13 @@ let t_map_unmap = test "host_map_guest + host_reclaim_page" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu mem 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu mem gphys;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle mem gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
   let zeros = String.init 8 (fun _ -> '\x00') in
   assert (Bigstring.sub_string ~n:8 (Region.memory mem) = zeros);
   Region.free mem
@@ -78,11 +80,13 @@ let t_map_no_memcache = test "host_map_guest with no memcache" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  pkvm_expect_error (host_map_guest ~topup_memcache:false vcpu mem) 0L;
+  let gphys = 0L in
+  pkvm_expect_error (host_map_guest ~topup_memcache:false vcpu mem) gphys;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle mem gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
   Region.free mem
 
 let t_map_some_memcache = test "host_map_guest with some memcache" @@ fun _ ->
@@ -91,13 +95,15 @@ let t_map_some_memcache = test "host_map_guest with some memcache" @@ fun _ ->
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
   topup_vcpu_memcache vcpu 1;
-  pkvm_expect_error (host_map_guest ~topup_memcache:false vcpu mem) 0L;
+  let gphys = 0L in
+  pkvm_expect_error (host_map_guest ~topup_memcache:false vcpu mem) gphys;
   topup_vcpu_memcache vcpu 10;
-  host_map_guest ~topup_memcache:false vcpu mem 0L;
+  host_map_guest ~topup_memcache:false vcpu mem gphys;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle mem gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
   Region.free mem
 
 let t_map_memcache_manual = test "host_map_guest with manual memcache" @@ fun _ ->
@@ -108,11 +114,13 @@ let t_map_memcache_manual = test "host_map_guest with manual memcache" @@ fun _ 
   vcpu_load vcpu;
   let mc = List.fold_left push_memcache vcpu.mem.@[vcpu_memcache] mc_pages in
   vcpu.mem.@[vcpu_memcache] <- mc;
-  host_map_guest ~topup_memcache:false vcpu mem 0L;
+  let gphys = 0L in
+  host_map_guest ~topup_memcache:false vcpu mem gphys;
   vcpu_put ();
-  teardown_vm ~free_memcache:false vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle mem gphys)
+    ~free_memcache:false vm;
   free_vcpu ~free_memcache:false vcpu;
-  host_reclaim_region mem;
   Region.free mem;
   List.iter Region.close mc_pages
 
@@ -136,12 +144,14 @@ let t_vcpu_run = test "vcpu_run" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu exe gphys;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle exe gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
   Region.free exe
 
 let t_vcpu_run_n = test "vcpu_run_n" @@ fun _ ->
@@ -156,15 +166,17 @@ let t_vcpu_run_n = test "vcpu_run_n" @@ fun _ ->
   let vcpus = List.init vcpus (init_vcpu vm) in
   let vcpu0 = List.hd vcpus in
   vcpu_load vcpu0;
-  host_map_guest vcpu0 exe 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu0 exe gphys;
   vcpu_put ();
   vcpus |> List.iter (fun vcpu ->
     vcpu_load vcpu;
     vcpu_run_expect vcpu ~cond:fault_at_0xdead;
     vcpu_put ());
-  teardown_vm vm;
+    teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle exe gphys)
+    vm;
   List.iter free_vcpu vcpus;
-  host_reclaim_region exe;
   Region.free exe
 
 let t_vcpu_run_fpu = test "vcpu_run fpu" @@ fun _ ->
@@ -181,12 +193,14 @@ let t_vcpu_run_fpu = test "vcpu_run fpu" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu exe gphys;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle exe gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
   Region.free exe
 
 let t_guest_hvc_version = test "guest_hvc: version" @@ fun _ ->
@@ -199,12 +213,14 @@ let t_guest_hvc_version = test "guest_hvc: version" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu exe gphys;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle exe gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
   Region.free exe
 
 let t_guest_hvc_nonsense = test "guest_hvc: nonsense" @@ fun _ ->
@@ -218,12 +234,14 @@ let t_guest_hvc_nonsense = test "guest_hvc: nonsense" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu exe gphys;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () -> reclaim_dying_guest_page vm.handle exe gphys)
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
   Region.free exe
 
 let t_guest_hvc_mem_share =
@@ -238,17 +256,22 @@ let t_guest_hvc_mem_share =
     ldr x0, [x30]
   |} in
   let vm = init_vm () in
-  let vcpu = init_vcpu vm 0 in
+  let vcpu = init_vcpu vm 0
+  and gphys_exe = 0x0L
+  and gphys_mem = 0x2000L in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
-  host_map_guest vcpu mem 0x2000L;
+  host_map_guest vcpu exe gphys_exe;
+  host_map_guest vcpu mem gphys_mem;
   vcpu_run_expect vcpu ~cond:trap_on_hypercall;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () ->
+      reclaim_dying_guest_page vm.handle exe gphys_exe;
+      reclaim_dying_guest_page vm.handle mem gphys_mem
+    )
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
-  host_reclaim_region mem;
   Region.free exe;
   Region.free mem
 
@@ -268,18 +291,23 @@ let t_guest_hvc_mem_unshare =
     ldr x0, [x30]
   |} in
   let vm = init_vm () in
-  let vcpu = init_vcpu vm 0 in
+  let vcpu = init_vcpu vm 0
+  and gphys_exe = 0x0L
+  and gphys_mem = 0x2000L in
   vcpu_load vcpu;
-  host_map_guest vcpu exe 0x0L;
-  host_map_guest vcpu mem 0x2000L;
+  host_map_guest vcpu exe gphys_exe;
+  host_map_guest vcpu mem gphys_mem;
   vcpu_run_expect vcpu ~cond:trap_on_hypercall;
   vcpu_run_expect vcpu ~cond:trap_on_hypercall;
   vcpu_run_expect vcpu ~cond:fault_at_0xdead;
   vcpu_put ();
-  teardown_vm vm;
+  teardown_vm
+    ~cleanup:(fun () ->
+      reclaim_dying_guest_page vm.handle exe gphys_exe;
+      reclaim_dying_guest_page vm.handle mem gphys_mem
+    )
+    vm;
   free_vcpu vcpu;
-  host_reclaim_region exe;
-  host_reclaim_region mem;
   Region.free exe;
   Region.free mem
 
