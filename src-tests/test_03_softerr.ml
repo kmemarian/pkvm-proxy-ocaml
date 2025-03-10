@@ -82,12 +82,13 @@ let t_share_guest_twice = test "host_map_guest twice" @@ fun _ ->
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu mem 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu mem gphys;
   pkvm_expect_error (host_map_guest vcpu mem) 0x4000L;
   vcpu_put ();
   teardown_vm vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
+  reclaim_dying_guest_page vm.handle mem gphys;
   Region.free mem
 
 let t_share_guest_no_vcpu = test "host_map_guest no vcpu" @@ fun _ ->
@@ -96,10 +97,11 @@ let t_share_guest_no_vcpu = test "host_map_guest no vcpu" @@ fun _ ->
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
   vcpu_put ();
-  pkvm_expect_error (host_map_guest vcpu mem) 0x0L;
+  let gphys = 0x0L in
+  pkvm_expect_error (host_map_guest vcpu mem) gphys;
   teardown_vm vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
+  reclaim_dying_guest_page vm.handle mem gphys;
   Region.free mem
 
 let t_share_hyp_then_guest =
@@ -109,13 +111,14 @@ let t_share_hyp_then_guest =
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
   host_share_hyp mem;
-  pkvm_expect_error (host_map_guest vcpu mem) 0x0L;
+  let gphys = 0x0L in
+  pkvm_expect_error (host_map_guest vcpu mem) gphys;
   host_unshare_hyp mem;
-  host_map_guest vcpu mem 0x0L;
+  host_map_guest vcpu mem gphys;
   vcpu_put ();
   teardown_vm vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
+  reclaim_dying_guest_page vm.handle mem gphys;
   Region.free mem
 
 let t_share_guest_then_hyp =
@@ -124,12 +127,13 @@ let t_share_guest_then_hyp =
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu mem 0x0L;
+  let gphys = 0x0L in
+  host_map_guest vcpu mem gphys;
   pkvm_expect_error host_share_hyp mem;
   vcpu_put ();
   teardown_vm vm;
   free_vcpu vcpu;
-  host_reclaim_region mem;
+  reclaim_dying_guest_page vm.handle mem gphys;
   Region.free mem
 
 let t_guest_share_same_addr =
@@ -139,14 +143,16 @@ let t_guest_share_same_addr =
   let vm = init_vm () in
   let vcpu = init_vcpu vm 0 in
   vcpu_load vcpu;
-  host_map_guest vcpu mem1 0x0L;
-  pkvm_expect_error (host_map_guest vcpu mem2) 0x0L;
-  host_map_guest vcpu mem2 0x1000L;
+  let gphys1 = 0x0L
+  and gphys2 = 0x1000L in
+  host_map_guest vcpu mem1 gphys1;
+  pkvm_expect_error (host_map_guest vcpu mem2) gphys1;
+  host_map_guest vcpu mem2 gphys2;
   vcpu_put ();
   teardown_vm vm;
   free_vcpu vcpu;
-  host_reclaim_region mem1;
-  host_reclaim_region mem2;
+  reclaim_dying_guest_page vm.handle mem1 gphys1;
+  reclaim_dying_guest_page vm.handle mem2 gphys2;
   Region.free mem1;
   Region.free mem2
 

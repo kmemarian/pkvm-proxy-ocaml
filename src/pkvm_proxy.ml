@@ -70,17 +70,19 @@ let hvc (type a): a host_smccc_func -> a = fun func ->
   try match func with
   | Pkvm_host_share_hyp x                   -> hvc_raw nr [|x|] |> returns_0
   | Pkvm_host_unshare_hyp x                 -> hvc_raw nr [|x|] |> returns_0
-  | Pkvm_host_reclaim_page x                -> hvc_raw nr [|x|] |> returns_0
-  | Pkvm_host_map_guest (phys, gphys)       -> hvc_raw nr [|phys; gphys|] |> returns_0
+  | Pkvm_host_map_guest (phys, gphys, nr_pages, prot) -> hvc_raw nr [|phys; gphys; nr_pages; prot|] |> returns_0
   | Kvm_adjust_pc vcpu_kaddr                -> hvc_raw nr [|vcpu_kaddr|] |> ignore
   | Kvm_vcpu_run vcpu_kaddr                 -> hvc_raw nr [|vcpu_kaddr|]
   | Kvm_timer_set_cntvoff cntvoff           -> hvc_raw nr [|cntvoff|] |> ignore
-  | Pkvm_init_vm (host, hyp, pgd, last_ran) -> hvc_raw nr [|host; hyp; pgd; last_ran|]
-  | Pkvm_init_vcpu (hdl, host, hyp)         -> hvc_raw nr [|of_int hdl; host; hyp|] |> returns_0
-  | Pkvm_teardown_vm hdl                    -> hvc_raw nr [|of_int hdl|] |> returns_0
+  | Pkvm_init_vm (host, pgd)                -> hvc_raw nr [|host; pgd|]
+  | Pkvm_init_vcpu (hdl, host)              -> hvc_raw nr [|of_int hdl; host|] |> returns_0
+  | Pkvm_start_teardown_vm hdl              -> hvc_raw nr [|of_int hdl|]
+  | Pkvm_finalize_teardown_vm hdl           -> hvc_raw nr [|of_int hdl|] |> returns_0
+  | Pkvm_reclaim_dying_guest_page (hdl, pfn, gfn, order) -> hvc_raw nr [|of_int hdl; pfn; gfn; order|]
   | Pkvm_vcpu_load (hdl, idx, hcr_el2)      -> hvc_raw nr [|of_int hdl; of_int idx; hcr_el2|]
   | Pkvm_vcpu_put                           -> hvc_raw nr [||] |> returns_0
   | Pkvm_vcpu_sync_state                    -> hvc_raw nr [||] |> returns_0
+  | Pkvm_hyp_alloc_mgt_refill (id, phys, nr_pages) -> hvc_raw nr [|id; phys; nr_pages|]
   | _ -> failwith "hvc: host smccc function not implemented"
   with Proxy err -> raise (HVC err)
 
@@ -98,11 +100,11 @@ let alloc_free    fd = ioctl_io  fd 'A' 3 |> returns_0
 
 let struct_kvm_size            = ioctl_io  pkvm 's' 0
 let struct_kvm_get_offset      = ioctl_int pkvm 's' 1
-let hyp_vm_size                = ioctl_io  pkvm 's' 2
+(* let hyp_vm_size                = ioctl_io  pkvm 's' 2 *)
 let pgd_size                   = ioctl_io  pkvm 's' 3
 let struct_kvm_vcpu_size       = ioctl_io  pkvm 's' 4
 let struct_kvm_vcpu_get_offset = ioctl_int pkvm 's' 5
-let hyp_vcpu_size              = ioctl_io  pkvm 's' 6
+(* let hyp_vcpu_size              = ioctl_io  pkvm 's' 6 *)
 
 let topup_hyp_memcache ptr min_pages =
   if min_pages < 1 then invalid_arg "topup_hyp_memcache" else
@@ -184,6 +186,7 @@ let max_vcpus             = struct_kvm 2 f_int32
 let created_vcpus         = struct_kvm 3 f_int32
 let arch_pkvm_enabled     = struct_kvm 4 f_bool
 let arch_pkvm_teardown_mc = struct_kvm 5 (read_memcache, not_implemented)
+let arch_pkvm_pvmfw_load_addr = struct_kvm 6 f_int64
 
 type struct_kvm_vcpu
 
@@ -199,6 +202,7 @@ let vcpu_fault    = struct_kvm_vcpu 6 (read_fault_info, not_implemented)
 let vcpu_regs     = struct_kvm_vcpu 7 (read_regs, write_regs)
 let vcpu_fp_regs  = struct_kvm_vcpu 8 f_not_implemented
 let vcpu_memcache = struct_kvm_vcpu 9 (read_memcache, not_implemented)
+let vcpu_hyp_reqs = struct_kvm_vcpu 10 f_int64
 
 (* Printers *)
 
@@ -218,19 +222,45 @@ let pp_host_smccc_func (type a) ppf: a host_smccc_func -> _ = function
 | Pkvm_prot_finalize                 -> Fmt.pf ppf "PKVM_PROT_FINALIZE"
 | Pkvm_host_share_hyp x              -> Fmt.pf ppf "PKVM_HOST_SHARE_HYP (0x%Lx)" x
 | Pkvm_host_unshare_hyp x            -> Fmt.pf ppf "PKVM_HOST_UNSHARE_HYP (0x%Lx)" x
-| Pkvm_host_reclaim_page x           -> Fmt.pf ppf "PKVM_HOST_RECLAIM_PAGE (0x%Lx)" x
-| Pkvm_host_map_guest (phys, gphys)  -> Fmt.pf ppf "PKVM_HOST_MAP_GUEST (@[0x%Lx,@ 0x%Lx@])" phys gphys
+(* | Pkvm_host_reclaim_page x           -> Fmt.pf ppf "PKVM_HOST_RECLAIM_PAGE (0x%Lx)" x *)
+| Pkvm_host_map_guest (phys, gphys, nr_pages, prot) -> Fmt.pf ppf "PKVM_HOST_MAP_GUEST (@[0x%Lx,@ %Lx,@ %Lx,@ 0x%Lx@])" phys gphys nr_pages prot
+| Pkvm_host_unmap_guest (hdl, pfn, gfn, order) -> Fmt.pf ppf "PKVM_HOST_SHARE_HYP (@[%d,@ %Lx,@ %Lx,@ %Ld@])" hdl pfn gfn order
+| Pkvm_relax_perms -> Fmt.pf ppf "PKVM_RELAX_PERMS" (* TODO *)
+| Pkvm_wrprotect _ -> Fmt.pf ppf "PKVM_WRPROTECT" (* TODO *)
+| Pkvm_dirty_log _ -> Fmt.pf ppf "PKVM_DIRTY_LOG" (* TODO *)
+| Pkvm_tlb_flush_vmid _ -> Fmt.pf ppf "PKVM_TLB_FLUSH_VMID" (* TODO *)
+
 | Kvm_adjust_pc vcpu_kaddr           -> Fmt.pf ppf "KVM_ADJUST_PC (0x%Lx)" vcpu_kaddr
 | Kvm_vcpu_run vcpu_kaddr            -> Fmt.pf ppf "KVM_VCPU_RUN (0x%Lx)" vcpu_kaddr
 | Kvm_timer_set_cntvoff cntvoff      -> Fmt.pf ppf "KVM_TIMER_SET_CNTVOFF (0x%Lx)" cntvoff
 | Vgic_v3_save_vmcr_aprs             -> Fmt.pf ppf "VGIC_V3_SAVE_VMCR_APRS"
 | Vgic_v3_restore_vmcr_aprs          -> Fmt.pf ppf "VGIC_V3_RESTORE_VMCR_APRS"
-| Pkvm_init_vm (host, hyp, pgd, ran) -> Fmt.pf ppf "PKVM_INIT_VM (@[0x%Lx,@ 0x%Lx,@ 0x%Lx,@ 0x%Lx@])" host hyp pgd ran
-| Pkvm_init_vcpu (hdl, host, hyp)    -> Fmt.pf ppf "PKVM_INIT_VCPU (@[%d,@ 0x%Lx,@ 0x%Lx@])" hdl host hyp
-| Pkvm_teardown_vm hdl               -> Fmt.pf ppf "PKVM_TEARDOWN_VM %d" hdl
+| Pkvm_init_vm (host, pgd)           -> Fmt.pf ppf "PKVM_INIT_VM (@[0x%Lx,@ 0x%Lx@])" host pgd
+| Pkvm_init_vcpu (hdl, host)    -> Fmt.pf ppf "PKVM_INIT_VCPU (@[%d,@ 0x%Lx@])" hdl host
+(* | Pkvm_teardown_vm hdl               -> Fmt.pf ppf "PKVM_TEARDOWN_VM %d" hdl *)
+| Pkvm_start_teardown_vm _ -> Fmt.pf ppf "PKVM_START_TEARDOWN_VM" (* TODO *)
+| Pkvm_finalize_teardown_vm _ -> Fmt.pf ppf "PKVM_FINALIZE_TEARDOWN_VM" (* TODO *)
+| Pkvm_reclaim_dying_guest_page (hdl, pfn, gfn, order) -> Fmt.pf ppf "PKVM_RECLAIM_DYING_GUEST_PAGE (@[%d,@ %Lx,@ %Lx,@ %Ld@])" hdl pfn gfn order
 | Pkvm_vcpu_load (hdl, idx, hcr_el2) -> Fmt.pf ppf "PKVM_VCPU_LOAD (@[%d,@ %d,@ 0x%Lx@])" hdl idx hcr_el2
 | Pkvm_vcpu_put                      -> Fmt.pf ppf "PKVM_VCPU_PUT"
 | Pkvm_vcpu_sync_state               -> Fmt.pf ppf "PKVM_VCPU_SYNC_STATE"
+| Pkvm_load_tracing                  -> Fmt.pf ppf "PKVM_LOAD_TRACING"
+| Pkvm_teardown_tracing              -> Fmt.pf ppf "PKVM_TEARDOWN_TRACING"
+| Pkvm_enable_tracing                -> Fmt.pf ppf "PKVM_ENABLE_TRACING"
+| Pkvm_swap_reader_tracing           -> Fmt.pf ppf "PKVM_SWAP_READER_TRACING"
+| Pkvm_enable_event                  -> Fmt.pf ppf "PKVM_ENABLE_EVENT"
+| Pkvm_hyp_alloc_mgt_refill (id, phys, nr_pages) -> Fmt.pf ppf "PKVM_ALLOC_MGT_REFILL (@[%Ld,@ 0x%Lx,@ %Ld@])" id phys nr_pages
+| Pkvm_hyp_alloc_mgt_reclaimable     -> Fmt.pf ppf "PKVM_ALLOC_MGT_RECLAIMABLE"
+| Pkvm_hyp_alloc_mgt_reclaim         -> Fmt.pf ppf "PKVM_ALLOC_MGT_RECLAIM"
+| Pkvm_host_iommu_alloc_domain       -> Fmt.pf ppf "PKVM_IOMMU_ALLOC_DOMAIN"
+| Pkvm_host_iommu_free_domain        -> Fmt.pf ppf "PKVM_IOMMU_FREE_DOMAIN"
+| Pkvm_host_iommu_attach_dev         -> Fmt.pf ppf "PKVM_IOMMU_ATTACH_DEV"
+| Pkvm_host_iommu_detach_dev         -> Fmt.pf ppf "PKVM_IOMMU_DETACH_DEV"
+| Pkvm_host_iommu_map_pages          -> Fmt.pf ppf "PKVM_IOMMU_MAP_PAGES"
+| Pkvm_host_iommu_unmap_pages        -> Fmt.pf ppf "PKVM_IOMMU_UNMAP_PAGES"
+| Pkvm_host_iommu_iova_to_phys       -> Fmt.pf ppf "PKVM_IOMMU_IOVA_TO_PHYS"
+| Pkvm_host_hvc_pd                   -> Fmt.pf ppf "PKVM_HOST_HVC_PD"
+| Pkvm_stage2_snapshot               -> Fmt.pf ppf "PKVM_STAGE2_SNAPSHOT"
 
 let pp_regs ppf rg =
   let px ppf = Fmt.pf ppf "0x%Lx" in
@@ -246,6 +276,18 @@ let pp_fault_info ppf info =
 let (//) a b = (a + b - 1) / b
 
 let hvc func = Log.info (fun k -> k "hvc %a" pp_host_smccc_func func); hvc func
+
+(* TODO: add a max attempt *)
+let hvc_until_not_busy func =
+  let rec loop n =
+    let ret = hvc func in
+    if ret = -16(*TODO: EBUSY -- don't hardcode like this *) then
+      loop (n+1)
+    else
+      (Log.info (fun k -> k "hvc %a success (took %d tries)"
+        pp_host_smccc_func func n); ret) in
+  loop 1
+
 
 type vm = { handle : int; vcpus: int; mem : struct_kvm region }
 type vcpu = { idx : int; mem : struct_kvm_vcpu region; vm : vm }
@@ -302,9 +344,19 @@ let host_unshare_hyp reg =
   Log.debug (fun k -> k "host_unshare_hyp %a" Region.pp reg);
   for_each_page ~base:reg.phys reg.size @@ fun pg -> hvc (Pkvm_host_unshare_hyp pg)
 
-let host_reclaim_region reg =
+(* let host_reclaim_region reg =
   Log.debug (fun k -> k "host_reclaim_region %a" Region.pp reg);
-  for_each_page ~base:reg.phys reg.size @@ fun pg -> hvc (Pkvm_host_reclaim_page pg)
+  for_each_page ~base:reg.phys reg.size @@ fun pg -> hvc (Pkvm_host_reclaim_page pg) *)
+let reclaim_dying_guest_page handle reg guest_phys =
+  let open Int64 in
+  let phys  = reg.phys lsr page_shift
+  and gphys = guest_phys lsr page_shift
+  and order = 0L in (* TODO: use higher orders when the region is large enough *)
+  Log.debug (fun k -> k "reclaim_dying_guest_page %a" Region.pp reg);
+  for_each_page reg.size @@ fun pg ->
+    ignore @@ hvc (Pkvm_reclaim_dying_guest_page (handle, phys + pg, gphys + pg, order))
+
+let todo_prot: int64 = 0x7L (* RWX *)
 
 let host_map_guest ?(memcache_topup = true) vcpu reg guest_phys =
   let open Int64 in
@@ -313,7 +365,7 @@ let host_map_guest ?(memcache_topup = true) vcpu reg guest_phys =
   and mc = 5 * (reg.size // page_size) in
   Log.debug (fun k -> k "host_map_guest %a" Region.pp reg);
   if memcache_topup then topup_hyp_memcache vcpu.mem.@[vcpu_memcache] mc;
-  for_each_page reg.size @@ fun pg -> hvc (Pkvm_host_map_guest (phys + pg, gphys + pg))
+  for_each_page reg.size @@ fun pg -> hvc (Pkvm_host_map_guest (phys + pg, gphys + pg, 1L, todo_prot))
 
 let max_vm_vcpus = 16
 
@@ -321,27 +373,42 @@ let init_vm ?(vcpus = 1) ?(protected = true) () =
   assert (vcpus < max_vm_vcpus);
   let release = true in
   let host_kvm = Region.alloc ~release struct_kvm_size
-  and hyp_kvm  = Region.alloc ~release (hyp_vm_size + vcpus * sizeof_void_p)
-  and pgd      = Region.alloc ~release pgd_size
-  and last_ran = Region.alloc ~release (max_vm_vcpus * sizeof_int) in
+  and pgd      = Region.alloc ~release pgd_size in
+
+  (* buf with 10 pages *)
+  (* TODO: replace this with a loop first try the hcall and then look at the number of missing donations, ... *)
+  let buf = Region.alloc ~release (10*4096) in
+  topup_hyp_memcache (Region.memory buf) 10;
+
+  let _ = hvc (Pkvm_hyp_alloc_mgt_refill (0L, buf.phys, 10L)) in
 
   host_kvm.@[arch_pkvm_enabled] <- protected;
   host_kvm.@[created_vcpus] <- Int32.of_int vcpus;
-
+  host_kvm.@[arch_pkvm_pvmfw_load_addr] <- -1L; (* this is PVMFW_INVALID_LOAD_ADDR (when promoted to long), should we add a command to hyp_proxy? *)
   host_share_hyp host_kvm;
-  let handle = hvc (Pkvm_init_vm (host_kvm.kaddr, hyp_kvm.kaddr, pgd.kaddr, last_ran.kaddr)) in
+  let handle = hvc (Pkvm_init_vm (host_kvm.kaddr, pgd.kaddr)) in
 
   Log.debug (fun k -> k "init_vm ->@ %d@ %a" handle Region.pp host_kvm);
   { handle; vcpus; mem = host_kvm }
 
-let teardown_vm vm =
+(* let teardown_vm vm =
   Log.debug (fun k -> k "teardown_vm@ %d@ %a@ ->" vm.handle Region.pp vm.mem);
   hvc (Pkvm_teardown_vm vm.handle);
+  free_hyp_memcache vm.mem.@[arch_pkvm_teardown_mc];
+  host_unshare_hyp vm.mem;
+  Region.free vm.mem *)
+let teardown_vm ?f vm =
+  Log.debug (fun k -> k "teardown_vm@ %d@ %a@ ->" vm.handle Region.pp vm.mem);
+  ignore @@ hvc_until_not_busy (Pkvm_start_teardown_vm vm.handle);
+  (* TODO: check error of the previous? *)
+  Option.fold ~none:() ~some:(fun f -> f ()) f;
+  hvc (Pkvm_finalize_teardown_vm vm.handle);
   free_hyp_memcache vm.mem.@[arch_pkvm_teardown_mc];
   host_unshare_hyp vm.mem;
   Region.free vm.mem
 
 let free_vcpu vcpu =
+  (* TODO: unshare and free the vcpu_hyp_reqs page *)
   host_unshare_hyp vcpu.mem;
   Region.free vcpu.mem
 
@@ -349,13 +416,15 @@ let init_vcpu ?(index_check = true) vm idx =
   if index_check && vm.vcpus <= idx then Fmt.invalid_arg "init_vcpu: cpu %d (max %d)" idx vm.vcpus;
   let release = true in
   let host_vcpu = Region.alloc ~release struct_kvm_vcpu_size
-  and hyp_vcpu  = Region.alloc ~release (hyp_vcpu_size + vm.vcpus * sizeof_void_p) in
+  and hyp_reqs  = Region.alloc ~release page_size in
 
   host_vcpu.@[vcpu_idx] <- Int32.of_int idx;
   host_vcpu.@[vcpu_hcr_el2] <- Int64.(1L lsl 31);
-
+  host_vcpu.@[vcpu_hyp_reqs] <- hyp_reqs.kaddr;
+  (* TODO: host_vcpu->arch.stage2_mc :=== filled *)
   host_share_hyp host_vcpu;
-  hvc (Pkvm_init_vcpu (vm.handle, host_vcpu.kaddr, hyp_vcpu.kaddr));
+  host_share_hyp hyp_reqs;
+  hvc (Pkvm_init_vcpu (vm.handle, host_vcpu.kaddr));
 
   Log.debug (fun k -> k "init_vcpu@ %d@ %d@ -> %a" vm.handle idx Region.pp host_vcpu);
   { idx; mem = host_vcpu; vm }
